@@ -16,7 +16,7 @@ if not os.path.exists(results_dir):
     print(f"Created results directory: {results_dir}")
 
 # Set correct data path
-data_filepath = os.path.join(parent_dir, "data", "BPI_Challenge_2017.csv")
+data_filepath = os.path.join(parent_dir, "data", "Final_Enriched_Dataset_300_rows.csv")
 
 from PredictiveModel import PredictiveModel
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
@@ -51,11 +51,12 @@ def preprocess_data(df):
 
 # Define columns and parameters
 static_cols = ["RequestedAmount", "MonthlyCost", "FirstWithdrawalAmount", "CreditScore"]
-dynamic_cols = ["startTime", "completeTime"]
+dynamic_cols = ["startTime", "completeTime", "EventDescription"]
 cat_cols = ["ApplicationType", "LoanGoal", "EventOrigin", "Action"]
 case_id_col = "case"
 label_col = "Accepted"
 event_nr_col = "event"
+text_col = "EventDescription"
 
 # Preprocess data
 data = preprocess_data(data)
@@ -114,7 +115,7 @@ for train_index, test_index in kf.split(train[train[event_nr_col]==1], train[tra
             nr_events=3,
             case_id_col=case_id_col,
             label_col=label_col,
-            text_col="text",
+            text_col=text_col,
             text_transformer_type=None,
             cls_method=cls_method,
             encoder_kwargs=encoder_kwargs,
