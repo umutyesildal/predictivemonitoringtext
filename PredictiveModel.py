@@ -70,58 +70,18 @@ class PredictiveModel():
         self.nr_test_cases = None
 
     def fit(self, dt_train):
-        """
-        Fit the predictive model on the training dataset.
-        1) Sequence-encode the training data
-        2) Optionally transform text columns
-        3) Fit the classifier
-        """
-        preproc_start_time = time.time()
-
-        # --- OPTIONAL: If you want to ensure the event column is numeric, uncomment:
-        # if not pd.api.types.is_numeric_dtype(dt_train[ self.encoder.event_nr_col ]):
-        #     print("Warning: event_nr_col is not numeric. You may need to convert or reindex events.")
-        
+        print("Encoding training data...")
         train_encoded = self.encoder.fit_transform(dt_train)
         
-        # Check if encoding returned an empty DataFrame
-        if train_encoded.empty:
-            print("Warning: after sequence encoding, training data is empty. "
-                  "Possibly nr_events is too large or event column is not numeric.")
-            return  # Skip training altogether
-        
-        # Prepare features (X) and labels (y)
+        print("Preparing features and target...")
         train_X = train_encoded.drop([self.case_id_col, self.label_col], axis=1)
         train_y = train_encoded[self.label_col]
         
-        # Text transformation
-        if self.transformer is not None:
-            text_cols = [col for col in train_X.columns if col.startswith(self.text_col)]
-            # Ensure text columns are string-type
-            for col in text_cols:
-                train_X[col] = train_X[col].astype('str')
-            # Transform text
-            train_text = self.transformer.fit_transform(train_X[text_cols], train_y)
-            # Drop original text cols, concatenate transformed text
-            train_X = pd.concat([train_X.drop(text_cols, axis=1), train_text], axis=1)
+        print("Fitting classifier...")
+        self.cls.fit(train_X, train_y)
+        print("Model fitting completed.")
         
-        self.train_X = train_X  # For reference/debug
-        preproc_end_time = time.time()
-        self.preproc_time = preproc_end_time - preproc_start_time
-        
-        # Train classifier
-        cls_start_time = time.time()
-        unique_labels = train_y.unique()
-        if len(unique_labels) < 2:
-            # Less than 2 classes in y -> hardcoded prediction
-            self.hardcoded_prediction = unique_labels[0]
-            self.cls.classes_ = unique_labels
-            print(f"Warning: only one class '{self.hardcoded_prediction}' present in training data.")
-        else:
-            self.cls.fit(train_X, train_y)
-        cls_end_time = time.time()
-        self.cls_time = cls_end_time - cls_start_time
-
+        return self
 
     def predict_proba(self, dt_test):
         """

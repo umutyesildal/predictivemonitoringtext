@@ -3,6 +3,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Ignore all files in data folder
+data/
+
+# Ignore venv
+venv/
+.venv/
+
 # C extensions
 *.so
 
