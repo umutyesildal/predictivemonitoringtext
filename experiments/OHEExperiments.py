@@ -3,6 +3,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
 import sys
 import os
+import numpy as np
+from sklearn.utils import resample
 
 # Add parent directory to system path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -16,7 +18,7 @@ if not os.path.exists(results_dir):
     print(f"Created results directory: {results_dir}")
 
 # Set correct data path
-data_filepath = os.path.join(parent_dir, "data", "Final_Enriched_Dataset_300_rows.csv")
+data_filepath = os.path.join(parent_dir, "data", "updated_500row.csv")
 
 from PredictiveModel import PredictiveModel
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
@@ -61,13 +63,44 @@ text_col = "EventDescription"
 # Preprocess data
 data = preprocess_data(data)
 
-# Divide into train and test data
-train_names, test_names = train_test_split(data[case_id_col].unique(), train_size=0.8, random_state=42)
-train = data[data[case_id_col].isin(train_names)]
-test = data[data[case_id_col].isin(test_names)]
+# Detect minority class
+minority_class = 0 if (data[label_col] == 0).sum() < (data[label_col] == 1).sum() else 1
+majority_class = 1 - minority_class
+
+# Separate majority and minority samples
+minority = data[data[label_col] == minority_class]
+majority = data[data[label_col] == majority_class]
+
+# Upsample minority class
+minority_upsampled = resample(minority,
+                            replace=True,
+                            n_samples=len(majority),
+                            random_state=42)
+
+# Create balanced dataset
+data_balanced = pd.concat([majority, minority_upsampled])
+
+# First create case-level labels
+case_labels = data_balanced.groupby(case_id_col)[label_col].first()
+
+# Then perform train-test split
+train_names, test_names = train_test_split(case_labels.index.values, 
+                                         train_size=0.8, 
+                                         random_state=42,
+                                         stratify=case_labels.values)
+
+# Split into train and test sets
+train = data_balanced[data_balanced[case_id_col].isin(train_names)]
+test = data_balanced[data_balanced[case_id_col].isin(test_names)]
+
+# Get train case labels
+train_case_labels = case_labels[case_labels.index.isin(train_names)]
 
 # Create five folds for cross-validation
 kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=22)
+
+# Convert train_names to array for proper indexing
+train_names_array = np.array(train_names)
 
 # Define parameters for experiments
 confidences = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
@@ -95,12 +128,12 @@ transformer_kwargs = {
 
 # Run experiments
 part = 1
-for train_index, test_index in kf.split(train[train[event_nr_col]==1], train[train[event_nr_col]==1][label_col]):
+for train_index, test_index in kf.split(train_names_array, train_case_labels):
     
     # Create train and validation data for current fold
-    current_train_names = train_names[train_index]
+    current_train_names = train_names_array[train_index]
     train_chunk = train[train[case_id_col].isin(current_train_names)]
-    current_test_names = train_names[test_index]
+    current_test_names = train_names_array[test_index]
     test_chunk = train[train[case_id_col].isin(current_test_names)]
     
     for cls_method in cls_methods:
@@ -141,7 +174,16 @@ for train_index, test_index in kf.split(train[train[event_nr_col]==1], train[tra
                 
                 # Calculate metrics
                 acc = accuracy_score(y_true_filtered, y_pred)
-                auc = roc_auc_score(y_true_filtered, preds_proba[mask][:,1])
+                
+                # Add safety check for AUC calculation
+                try:
+                    if len(np.unique(y_true_filtered)) > 1:
+                        auc = roc_auc_score(y_true_filtered, preds_proba[mask][:,1])
+                    else:
+                        auc = None
+                except IndexError:
+                    auc = None
+                    
                 coverage = len(y_pred) / len(y_true)
                 
                 results.append({
@@ -184,6 +226,13 @@ final_preds = final_preds_proba.argmax(axis=1)
 
 print("\nTest Set Metrics:")
 print("Accuracy:", accuracy_score(final_model.test_y, final_preds))
-print("AUC:", roc_auc_score(final_model.test_y, final_preds_proba[:,1]))
+try:
+    if len(np.unique(final_model.test_y)) > 1:
+        auc = roc_auc_score(final_model.test_y, final_preds_proba[:,1])
+        print("AUC:", auc)
+    else:
+        print("AUC: Not calculable (only one class present)")
+except IndexError:
+    print("AUC: Not calculable (prediction error)")
 print("\nClassification Report:")
 print(classification_report(final_model.test_y, final_preds))
