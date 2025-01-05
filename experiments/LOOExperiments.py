@@ -3,6 +3,7 @@ from sklearn.model_selection import LeaveOneOut
 import sys
 import os
 import numpy as np
+import warnings
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
 from sklearn.utils import resample
 
@@ -36,8 +37,8 @@ def preprocess_data(df):
         df = df.sample(n=MAX_SAMPLES, random_state=42)
     
     # Conversions
-    df["startTime"] = pd.to_datetime(df["startTime"], errors="coerce")
-    df["completeTime"] = pd.to_datetime(df["completeTime"], errors="coerce")
+    df["startTime"] = pd.to_datetime(df["startTime"], format="%d.%m.%Y %H:%M", errors="coerce")
+    df["completeTime"] = pd.to_datetime(df["completeTime"], format="%d.%m.%Y %H:%M", errors="coerce")
     df["startTime"] = df["startTime"].astype("int64") // 10**9
     df["completeTime"] = df["completeTime"].astype("int64") // 10**9
     df["Accepted"] = df["Accepted"].str.lower().map({"true": 1, "false": 0}).fillna(0).astype(int)
@@ -48,18 +49,21 @@ def preprocess_data(df):
                    "CreditScore", "NumberOfTerms", "OfferedAmount"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-        # Normalize numeric columns
         if df[col].std() != 0:
             df[col] = (df[col] - df[col].mean()) / df[col].std()
 
-    # Advanced feature engineering
+    # Credit score based features
+    df['credit_to_amount'] = df['CreditScore'] / df['RequestedAmount']
+    df['credit_to_monthly'] = df['CreditScore'] / df['MonthlyCost']
+    df['risk_score'] = df['CreditScore'] * df['NumberOfTerms'] / df['RequestedAmount']
+    
+    # Term based features
+    df['total_cost'] = df['MonthlyCost'] * df['NumberOfTerms']
+    df['cost_to_amount'] = df['total_cost'] / df['RequestedAmount']
+    
+    # Time based features
     df['process_duration'] = df['completeTime'] - df['startTime']
     df['process_duration'] = (df['process_duration'] - df['process_duration'].mean()) / df['process_duration'].std()
-    
-    # More meaningful financial ratios
-    df['monthly_burden'] = df['MonthlyCost'] * df['NumberOfTerms'] / df['RequestedAmount']
-    df['credit_ratio'] = df['CreditScore'] / 1000  # Normalize credit score
-    df['offer_ratio'] = df['OfferedAmount'] / df['RequestedAmount']
     
     # Replace infinities and fill NaNs
     df = df.replace([np.inf, -np.inf], np.nan)
@@ -70,8 +74,9 @@ def preprocess_data(df):
 
 # Define columns and parameters
 static_cols = [
-    "RequestedAmount", "MonthlyCost", "FirstWithdrawalAmount", "CreditScore",
-    "monthly_burden", "credit_ratio", "offer_ratio", "process_duration"
+    "RequestedAmount", "MonthlyCost", "CreditScore", "NumberOfTerms",
+    "credit_to_amount", "credit_to_monthly", "risk_score",
+    "total_cost", "cost_to_amount", "process_duration"
 ]
 dynamic_cols = ["startTime", "completeTime", "process_duration"]
 cat_cols = ["ApplicationType", "LoanGoal"]  # Reduced to most important ones
@@ -144,21 +149,21 @@ transformer_kwargs = {
     "pos_label": "1"
 }
 
-# Optimize Random Forest parameters
+# Optimize Random Forest parameters for LOO
 cls_kwargs = {
-    "n_estimators": 500,  # Increased
-    "max_depth": 15,      # Increased
-    "min_samples_split": 10,
-    "min_samples_leaf": 4,
-    "class_weight": "balanced",  # Added class weights
+    "n_estimators": 200,  # Reduced for speed
+    "max_depth": 10,
+    "min_samples_split": 5,
+    "min_samples_leaf": 2,
+    "class_weight": "balanced",
     "random_state": 22
 }
 
-# Run LOO CV with less output
+# Run LOO CV with progress tracking
 print("\nStarting Leave-One-Out Cross Validation...")
 total_iterations = len(data_balanced)
 for idx, (train_idx, test_idx) in enumerate(loo.split(data_balanced)):
-    if idx % 100 == 0:  # Reduced progress updates
+    if idx % 50 == 0:  # Show progress every 50 iterations
         print(f"Progress: {idx}/{total_iterations}")
     
     train_data = data_balanced.iloc[train_idx]
@@ -176,8 +181,7 @@ for idx, (train_idx, test_idx) in enumerate(loo.split(data_balanced)):
         cls_kwargs=cls_kwargs
     )
     
-    # Suppress output during training
-    import warnings
+    # Suppress warnings and fit model
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model.fit(train_data)
