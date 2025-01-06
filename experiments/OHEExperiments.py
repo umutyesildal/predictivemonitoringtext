@@ -18,7 +18,7 @@ if not os.path.exists(results_dir):
     print(f"Created results directory: {results_dir}")
 
 # Set correct data path
-data_filepath = os.path.join(parent_dir, "data", "BPI_Challenge_2017_unstructured.csv")
+data_filepath = os.path.join(parent_dir, "data", "BPI_Challenge_2017.csv")
 
 from PredictiveModel import PredictiveModel
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
@@ -29,6 +29,9 @@ data = pd.read_csv(data_filepath, sep=";", low_memory=False, dtype=str)
 
 # Data preprocessing
 def preprocess_data(df):
+    print("\nPreprocessing Data:")
+    print(f"Initial shape: {df.shape}")
+    
     # Convert times to numeric
     df["startTime"] = pd.to_datetime(df["startTime"], errors="coerce")
     df["completeTime"] = pd.to_datetime(df["completeTime"], errors="coerce")
@@ -49,10 +52,22 @@ def preprocess_data(df):
     df.sort_values(by=["case", "startTime"], inplace=True)
     df["event"] = df.groupby("case").cumcount() + 1
     
+    # Print some event statistics
+    print("\nEvent Statistics:")
+    event_counts = df.groupby("event").size()
+    print(event_counts.head(10))
+    
+    print("\nSample of first few events for a case:")
+    sample_case = df["case"].iloc[0]
+    print(df[df["case"] == sample_case][["case", "event", "Action", "startTime"]].head())
+    
     return df
 
 # Define columns and parameters
-static_cols = ["RequestedAmount", "MonthlyCost", "FirstWithdrawalAmount", "CreditScore"]
+static_cols = [
+    "RequestedAmount", "MonthlyCost", "FirstWithdrawalAmount", 
+    "CreditScore", "NumberOfTerms", "OfferedAmount"
+]
 dynamic_cols = ["startTime", "completeTime"]
 cat_cols = ["ApplicationType", "LoanGoal", "EventOrigin"]
 case_id_col = "case"
@@ -61,15 +76,29 @@ event_nr_col = "event"
 text_col = "EventDescription"
 event_col = "Action"
 
+# Print data info before preprocessing
+print("\nData Info Before Preprocessing:")
+print(data.info())
+
 # Preprocess data
 data = preprocess_data(data)
 
+# Print data info after preprocessing
+print("\nData Info After Preprocessing:")
+print(data.info())
+
 # Print some statistics about the data
 print("\nData Statistics:")
-print(f"Total number of events: {len(data)}")
-print(f"Number of unique cases: {data[case_id_col].nunique()}")
+print(f"Total number of events: {len(data):,}")
+print(f"Number of unique cases: {data[case_id_col].nunique():,}")
 print(f"Average events per case: {len(data) / data[case_id_col].nunique():.2f}")
 print(f"Label distribution:\n{data.groupby(case_id_col)[label_col].first().value_counts(normalize=True)}")
+
+# Print unique values in categorical columns
+print("\nUnique values in categorical columns:")
+for col in cat_cols + [event_col]:
+    print(f"\n{col} unique values:")
+    print(data[col].value_counts().head())
 
 # First create case-level labels
 case_labels = data.groupby(case_id_col)[label_col].first()
@@ -118,11 +147,12 @@ encoder_kwargs = {
     "random_state": 22
 }
 
+# Text transformer parameters for BoNGTransformer
 transformer_kwargs = {
+    "ngram_min": 1,
     "ngram_max": 1,
-    "alpha": 1.0,
-    "nr_selected": 100,
-    "pos_label": "1"
+    "tfidf": False,
+    "nr_selected": 100
 }
 
 # Run experiments
@@ -144,20 +174,71 @@ for train_index, test_index in kf.split(train_names_array, train_case_labels):
         
         # Initialize and train model
         model = PredictiveModel(
-            nr_events=3,
+            nr_events=5,
             case_id_col=case_id_col,
             label_col=label_col,
             text_col=text_col,
-            text_transformer_type=None,
+            text_transformer_type="bong",
             cls_method=cls_method,
             encoder_kwargs=encoder_kwargs,
             transformer_kwargs=transformer_kwargs,
-            cls_kwargs=cls_kwargs
+            cls_kwargs={
+                "n_estimators": 200,
+                "max_depth": 10,
+                "min_samples_split": 5,
+                "random_state": 22
+            }
         )
         
+        # Print debug information before training
+        print("\nModel Configuration:")
+        print(f"Number of events: 5")
+        print(f"Text transformer: BoNGTransformer")
+        print(f"Text transformer parameters:")
+        print(f"  - ngram_min: {transformer_kwargs['ngram_min']}")
+        print(f"  - ngram_max: {transformer_kwargs['ngram_max']}")
+        print(f"  - tfidf: {transformer_kwargs['tfidf']}")
+        print(f"  - nr_selected: {transformer_kwargs['nr_selected']}")
+        print(f"Classifier: {cls_method}")
+        print(f"Static columns: {static_cols}")
+        print(f"Dynamic columns: {dynamic_cols}")
+        print(f"Categorical columns: {cat_cols}")
+        print(f"Event column: {event_col}")
+
         # Train model
         model.fit(train_chunk)
-        
+
+        # Get training features and target
+        train_encoded = model.encoder.transform(train_chunk)
+        train_X = train_encoded.drop([case_id_col, label_col], axis=1)
+
+        # Print feature importance if using RandomForest
+        if cls_method == "rf":
+            try:
+                # Get feature names and importance scores
+                feature_names = model.train_X.columns.tolist()
+                importance_scores = model.cls.feature_importances_
+                
+                if len(feature_names) == len(importance_scores):
+                    feature_importance = pd.DataFrame({
+                        'feature': feature_names,
+                        'importance': importance_scores
+                    }).sort_values('importance', ascending=False)
+                    
+                    print("\nTop 10 Most Important Features:")
+                    print(feature_importance.head(10))
+                    
+                    # Save feature importance to CSV
+                    importance_file = os.path.join(results_dir, f"feature_importance_fold{part}.csv")
+                    feature_importance.to_csv(importance_file)
+                    print(f"\nSaved feature importance to: {importance_file}")
+                else:
+                    print("\nWarning: Feature names and importance scores have different lengths")
+                    print(f"Number of features: {len(feature_names)}")
+                    print(f"Number of importance scores: {len(importance_scores)}")
+            except Exception as e:
+                print(f"\nError calculating feature importance: {str(e)}")
+
         # Test and evaluate
         preds_proba = model.predict_proba(test_chunk)
         y_true = model.test_y
@@ -208,15 +289,20 @@ for train_index, test_index in kf.split(train_names_array, train_case_labels):
 # Final evaluation on test set
 print("\nFinal Evaluation on Test Set:")
 final_model = PredictiveModel(
-    nr_events=3,
+    nr_events=5,
     case_id_col=case_id_col,
     label_col=label_col,
-    text_col="text",
-    text_transformer_type=None,
+    text_col=text_col,
+    text_transformer_type="bong",
     cls_method="rf",
     encoder_kwargs=encoder_kwargs,
     transformer_kwargs=transformer_kwargs,
-    cls_kwargs={"n_estimators": 100, "random_state": 22}
+    cls_kwargs={
+        "n_estimators": 200,
+        "max_depth": 10,
+        "min_samples_split": 5,
+        "random_state": 22
+    }
 )
 
 final_model.fit(train)

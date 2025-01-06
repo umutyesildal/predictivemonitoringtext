@@ -13,9 +13,8 @@ import numpy as np
 class PredictiveModel():
 
     def __init__(
-        self, nr_events, case_id_col, label_col, 
-        encoder_kwargs, transformer_kwargs, cls_kwargs, 
-        text_col=None, text_transformer_type=None, cls_method="rf"
+        self, nr_events, case_id_col, label_col, text_col=None, text_transformer_type=None,
+        cls_method="rf", encoder_kwargs=None, transformer_kwargs=None, cls_kwargs=None
     ):
         """
         PredictiveModel for a SINGLE prefix length (nr_events).
@@ -31,44 +30,42 @@ class PredictiveModel():
             text_transformer_type (str): one of the text transformers {None, "LDATransformer", ...}.
             cls_method (str): "rf" for RandomForestClassifier, "logit" for LogisticRegression.
         """
-        self.text_col = text_col
+        self.nr_events = nr_events
         self.case_id_col = case_id_col
         self.label_col = label_col
+        self.text_col = text_col
+        self.text_transformer_type = text_transformer_type
+        self.cls_method = cls_method
+        self.encoder_kwargs = encoder_kwargs if encoder_kwargs is not None else {}
+        self.transformer_kwargs = transformer_kwargs if transformer_kwargs is not None else {}
+        self.cls_kwargs = cls_kwargs if cls_kwargs is not None else {}
         
-        # Sequence Encoder (for numeric event sequences)
+        # Store static_cols from encoder_kwargs
+        self.static_cols = self.encoder_kwargs.get('static_cols', [])
+        
+        # Initialize classifier
+        if self.cls_method == "rf":
+            self.cls = RandomForestClassifier(**self.cls_kwargs)
+        elif self.cls_method == "logit":
+            self.cls = LogisticRegression(**self.cls_kwargs)
+            self.scaler = StandardScaler()
+        elif self.cls_method == "svm":
+            self.cls = SVC(**self.cls_kwargs)
+            self.scaler = StandardScaler()
+        
+        # Initialize encoder
         self.encoder = SequenceEncoder(
-            nr_events=nr_events, 
-            case_id_col=case_id_col, 
-            label_col=label_col,
-            **encoder_kwargs
+            nr_events=self.nr_events,
+            case_id_col=self.case_id_col,
+            label_col=self.label_col,
+            **self.encoder_kwargs
         )
         
-        # Text Transformer
-        if text_transformer_type is None:
-            self.transformer = None
-        elif text_transformer_type == "LDATransformer":
-            self.transformer = LDATransformer(**transformer_kwargs)
-        elif text_transformer_type == "BoNGTransformer":
-            self.transformer = BoNGTransformer(**transformer_kwargs)
-        elif text_transformer_type == "NBLogCountRatioTransformer":
-            self.transformer = NBLogCountRatioTransformer(**transformer_kwargs)
-        elif text_transformer_type == "PVTransformer":
-            self.transformer = PVTransformer(**transformer_kwargs)
+        # Initialize text transformer if specified
+        if self.text_transformer_type == "bong":
+            self.transformer = BoNGTransformer(**self.transformer_kwargs)
         else:
-            print("Transformer type not known")
             self.transformer = None
-
-        # Classifier
-        if cls_method == "logit":
-            self.cls = LogisticRegression(**cls_kwargs)
-        elif cls_method == "rf":
-            self.cls = RandomForestClassifier(**cls_kwargs)
-        elif cls_method == "svm":
-            self.cls = SVC(**cls_kwargs)
-            self.scaler = StandardScaler()
-        else:
-            print("Classifier method not known. Defaulting to RandomForest.")
-            self.cls = RandomForestClassifier(**cls_kwargs)
         
         self.hardcoded_prediction = None
         self.test_encode_time = None
@@ -81,39 +78,82 @@ class PredictiveModel():
         train_encoded = self.encoder.fit_transform(dt_train)
         
         print("Preparing features and target...")
-        train_X = train_encoded.drop([self.case_id_col, self.label_col], axis=1)
-        train_y = train_encoded[self.label_col]
+        self.train_X = train_encoded.drop([self.case_id_col, self.label_col], axis=1)
+        self.train_y = train_encoded[self.label_col]
+        
+        # Calculate class weights
+        if hasattr(self.cls, 'class_weight'):
+            n_samples = len(self.train_y)
+            n_classes = len(np.unique(self.train_y))
+            class_weights = dict(enumerate(n_samples / (n_classes * np.bincount(self.train_y))))
+            self.cls.class_weight = class_weights
+            print("\nClass weights:", class_weights)
+        
+        print("\nFeature Value Distribution:")
+        feature_non_zero = {}
+        for col in self.train_X.columns:
+            non_zero = (self.train_X[col] != 0).sum()
+            feature_non_zero[col] = non_zero/len(self.train_X)
+            print(f"{col}: {non_zero} non-zero values ({feature_non_zero[col]*100:.2f}%)")
+        
+        # Remove features with very low non-zero values
+        low_value_features = [col for col, ratio in feature_non_zero.items() 
+                            if ratio < 0.01 and col not in self.static_cols]
+        if low_value_features:
+            print(f"\nRemoving {len(low_value_features)} features with < 1% non-zero values:")
+            print(low_value_features)
+            self.train_X = self.train_X.drop(columns=low_value_features)
         
         # Text transformation should be done before scaling
         if self.transformer is not None:
-            print("Transforming text features...")
-            text_cols = [col for col in train_X.columns if col.startswith(self.text_col)]
+            print("\nText Transformation Details:")
+            print(f"Transformer type: {type(self.transformer).__name__}")
+            text_cols = [col for col in self.train_X.columns if col.startswith(self.text_col)]
+            print(f"Found {len(text_cols)} text columns")
+            
             if text_cols:
                 # Create a DataFrame with just the text columns
-                text_data = train_X[text_cols].copy()
+                text_data = self.train_X[text_cols].copy()
+                print(f"Text data shape before transformation: {text_data.shape}")
+                
                 # Convert to string and fill NaN values
                 for col in text_cols:
                     text_data[col] = text_data[col].fillna('').astype(str)
+                    print(f"Sample values from {col}:")
+                    print(text_data[col].head())
+                
                 # Transform text data
-                train_text = self.transformer.fit_transform(text_data, train_y)
+                train_text = self.transformer.fit_transform(text_data, self.train_y)
+                print(f"Text data shape after transformation: {train_text.shape}")
+                
                 # Combine with non-text features
-                train_X = pd.concat([train_X.drop(text_cols, axis=1), train_text], axis=1)
+                self.train_X = pd.concat([self.train_X.drop(text_cols, axis=1), train_text], axis=1)
+                print(f"Final feature matrix shape: {self.train_X.shape}")
         
         # Convert all remaining object/string columns to numeric
-        for col in train_X.select_dtypes(include=['object']).columns:
-            train_X[col] = pd.Categorical(train_X[col]).codes
+        for col in self.train_X.select_dtypes(include=['object']).columns:
+            self.train_X[col] = pd.Categorical(self.train_X[col]).codes
         
         # Feature scaling for SVM
         if hasattr(self, 'scaler'):
             print("Scaling features...")
-            train_X = pd.DataFrame(
-                self.scaler.fit_transform(train_X),
-                columns=train_X.columns,
-                index=train_X.index
+            self.train_X = pd.DataFrame(
+                self.scaler.fit_transform(self.train_X),
+                columns=self.train_X.columns,
+                index=self.train_X.index
             )
         
         print("Fitting classifier...")
-        self.cls.fit(train_X, train_y)
+        self.cls.fit(self.train_X, self.train_y)
+        
+        if hasattr(self.cls, 'feature_importances_'):
+            importances = pd.DataFrame({
+                'feature': self.train_X.columns,
+                'importance': self.cls.feature_importances_
+            }).sort_values('importance', ascending=False)
+            print("\nTop 20 Most Important Features:")
+            print(importances.head(20))
+        
         print("Model fitting completed.")
         
         return self
@@ -159,6 +199,23 @@ class PredictiveModel():
         # Convert all remaining object/string columns to numeric
         for col in test_X.select_dtypes(include=['object']).columns:
             test_X[col] = pd.Categorical(test_X[col]).codes
+        
+        # Ensure test features match training features
+        missing_cols = set(self.train_X.columns) - set(test_X.columns)
+        extra_cols = set(test_X.columns) - set(self.train_X.columns)
+        
+        if missing_cols or extra_cols:
+            print("\nAdjusting feature columns to match training data:")
+            if missing_cols:
+                print(f"Adding {len(missing_cols)} missing columns with zeros")
+                for col in missing_cols:
+                    test_X[col] = 0
+            if extra_cols:
+                print(f"Removing {len(extra_cols)} extra columns")
+                test_X = test_X.drop(columns=extra_cols)
+        
+        # Reorder columns to match training data
+        test_X = test_X.reindex(columns=self.train_X.columns, fill_value=0)
         
         # Feature scaling for SVM
         if hasattr(self, 'scaler'):

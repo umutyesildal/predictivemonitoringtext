@@ -215,6 +215,11 @@ class PVTransformer(TransformerMixin):
 class BoNGTransformer(TransformerMixin):
 
     def __init__(self, ngram_min=1, ngram_max=1, tfidf=False, nr_selected=100):
+        print(f"\nInitializing BoNGTransformer:")
+        print(f"ngram_min: {ngram_min}")
+        print(f"ngram_max: {ngram_max}")
+        print(f"tfidf: {tfidf}")
+        print(f"nr_selected: {nr_selected}")
         
         # should be tuned
         self.ngram_max = ngram_max
@@ -228,9 +233,15 @@ class BoNGTransformer(TransformerMixin):
         self.feature_selector = SelectKBest(chi2, k=self.nr_selected)
         self.selected_cols = None
         
-        
     def fit(self, X, y):
+        print("\nFitting BoNGTransformer:")
+        print(f"Input shape: {X.shape}")
+        
         data = X.values.flatten('F')
+        print(f"Number of text documents: {len(data)}")
+        print("Sample documents:")
+        print(data[:5])
+        
         if self.tfidf:
             self.vectorizer = TfidfVectorizer(
                 ngram_range=(self.ngram_min, self.ngram_max)
@@ -240,19 +251,25 @@ class BoNGTransformer(TransformerMixin):
                 ngram_range=(self.ngram_min, self.ngram_max)
             )
         bong = self.vectorizer.fit_transform(data)
+        print(f"\nVocabulary size: {len(self.vectorizer.get_feature_names_out())}")
+        print("Sample features:")
+        print(self.vectorizer.get_feature_names_out()[:10])
 
         # select features
-        if (self.nr_selected == "all") or (len(self.vectorizer.get_feature_names()) <= self.nr_selected):
+        if (self.nr_selected == "all") or (len(self.vectorizer.get_feature_names_out()) <= self.nr_selected):
             self.feature_selector = SelectKBest(chi2, k="all")
         self.feature_selector.fit(bong, y)
         
         # remember selected column names
         if self.nr_selected == "all":
-            self.selected_cols = np.array(self.vectorizer.get_feature_names())
+            self.selected_cols = np.array(self.vectorizer.get_feature_names_out())
         else:
-            self.selected_cols = np.array(self.vectorizer.get_feature_names())[
+            self.selected_cols = np.array(self.vectorizer.get_feature_names_out())[
                 self.feature_selector.scores_.argsort()[-self.nr_selected :][::-1]
             ]
+        print(f"\nSelected {len(self.selected_cols)} features")
+        print("Top selected features:")
+        print(self.selected_cols[:10])
         
         return self
     
