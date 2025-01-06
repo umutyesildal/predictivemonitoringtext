@@ -2,6 +2,8 @@ from SequenceEncoder import SequenceEncoder
 from TextTransformers import LDATransformer, PVTransformer, BoNGTransformer, NBLogCountRatioTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LinearRegression
+
 import pandas as pd
 import time
 import numpy as np
@@ -59,6 +61,8 @@ class PredictiveModel():
             self.cls = LogisticRegression(**cls_kwargs)
         elif cls_method == "rf":
             self.cls = RandomForestClassifier(**cls_kwargs)
+        elif cls_method == "linear":
+            self.cls = LinearRegression(**cls_kwargs)
         else:
             print("Classifier method not known. Defaulting to RandomForest.")
             self.cls = RandomForestClassifier(**cls_kwargs)
