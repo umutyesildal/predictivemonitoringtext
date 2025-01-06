@@ -42,7 +42,7 @@ class PredictiveMonitor():
     
     
     def test(self, dt_test, confidences=[0.6], two_sided=False, evaluate=True, output_filename=None, outfile_mode='w', performance_output_filename=None):
-        
+        results_by_confidence = {}
         for confidence in confidences:
             results = self._test_single_conf(dt_test, confidence, two_sided)
             self.predictions[confidence] = results
@@ -50,25 +50,29 @@ class PredictiveMonitor():
             if evaluate:
                 evaluation = self._evaluate(dt_test, results, two_sided)
                 self.evaluations[confidence] = evaluation
+                results_by_confidence[confidence] = evaluation
                 
         if output_filename is not None:
-            metric_names = list(self.evaluations[confidences[0]].keys())
-            if not os.path.isfile(output_filename):
-                outfile_mode = 'w'
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(output_filename), exist_ok=True)
+            
+            # Write results
             with open(output_filename, outfile_mode) as fout:
                 if outfile_mode == 'w':
                     fout.write("confidence;value;metric\n")
-                for confidence in confidences:
-                    for k,v in self.evaluations[confidence].items():
-                        fout.write("%s;%s;%s\n"%(confidence, v, k))
+                for confidence, evaluation in results_by_confidence.items():
+                    for metric, value in evaluation.items():
+                        fout.write(f"{confidence};{value};{metric}\n")
                         
         if performance_output_filename is not None:
-             with open(performance_output_filename, 'w') as fout:
-                    fout.write("nr_events;train_preproc_time;train_cls_time;test_encode_time;test_preproc_time;test_time;nr_test_cases\n")
-                    for nr_events, pred_model in self.models.items():
-                        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(nr_events, pred_model.preproc_time, pred_model.cls_time, pred_model.test_encode_time, pred_model.test_preproc_time, pred_model.test_time, pred_model.nr_test_cases))
-                
-    
+            with open(performance_output_filename, 'w') as fout:
+                fout.write("nr_events;train_preproc_time;train_cls_time;test_encode_time;test_preproc_time;test_time;nr_test_cases\n")
+                for nr_events, pred_model in self.models.items():
+                    fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(nr_events, pred_model.preproc_time, pred_model.cls_time, pred_model.test_encode_time, pred_model.test_preproc_time, pred_model.test_time, pred_model.nr_test_cases))
+                    
+        return results_by_confidence
+        
+        
     def _test_single_conf(self, dt_test, confidence, two_sided):
 
         results = []
@@ -112,21 +116,17 @@ class PredictiveMonitor():
         
         
     def _evaluate(self, dt_test, results, two_sided):
-        #case_lengths = dt_test[self.case_id_col].value_counts()
-        #dt_test = dt_test[dt_test[self.event_nr_col] == 1]
-        N = len(dt_test)
-
+        positives = sum(dt_test[dt_test[self.event_nr_col] == 1][self.label_col] == self.pos_label)
+        
         tp = 0
-        fp = 0
         tn = 0
+        fp = 0
         fn = 0
-        earliness = 0
-        finished_case_names = [result["case_name"] for result in results]
-        positives = sum(dt_test[self.label_col] == self.pos_label)
-        negatives = sum(dt_test[self.label_col] != self.pos_label)
-
+        earliness = 0.0
+        finished_case_names = []
         
         for result in results:
+            finished_case_names.append(result["case_name"])
             if result["prediction"] == self.pos_label and result["class"] == self.pos_label:
                 tp += 1
             elif result["prediction"] == self.pos_label and result["class"] != self.pos_label:
@@ -135,8 +135,12 @@ class PredictiveMonitor():
                 tn += 1
             else:
                 fn += 1
-            #earliness += 1.0 * result["nr_events"] / case_lengths[result["case_name"]]
-            earliness += 1.0 * result["nr_events"] / min(int(dt_test[dt_test[self.case_id_col] == result["case_name"]]["case_length"]), self.max_events)
+                
+            # Get case length for this case
+            case_data = dt_test[dt_test[self.case_id_col] == result["case_name"]]
+            case_length = case_data['case_length'].iloc[0]  # Take first value since all values for a case are the same
+            max_events = getattr(self, 'max_events', float('inf'))  # Get max_events if set, otherwise use infinity
+            earliness += 1.0 * result["nr_events"] / min(case_length, max_events)
 
         if not two_sided:
             dt_test = dt_test[~dt_test[self.case_id_col].isin(finished_case_names)] # predicted as negatives
@@ -144,23 +148,17 @@ class PredictiveMonitor():
             fn = len(dt_test) - tn
 
         metrics = {}
-
-        metrics["recall"] = 1.0 * tp / positives # alternative without failures: (tp+fn)
+        
+        metrics["recall"] = 1.0 * tp / positives if positives > 0 else 0.0
         if len(results) > 0:
             metrics["accuracy"] = 1.0 * (tp+tn) / (tp+tn+fp+fn)
-            metrics["precision"] = 1.0 * tp / (tp+fp)
+            metrics["precision"] = 1.0 * tp / (tp+fp) if (tp+fp) > 0 else 0.0
+            metrics["f1"] = 2.0 * tp / (2.0*tp+fp+fn) if (2.0*tp+fp+fn) > 0 else 0.0
             metrics["earliness"] = earliness / len(results)
-            metrics["fscore"] = 2 * metrics["precision"] * metrics["recall"] / (metrics["precision"] + metrics["recall"])
         else:
-            metrics["accuracy"] = 0
-            metrics["precision"] = 0
-            metrics["earliness"] = 0
-            metrics["fscore"] = 0
-        metrics["specificity"] = 1.0 * tn / negatives # alternative without failures: (fp+tn)
-        metrics["tp"] = tp
-        metrics["fn"] = fn
-        metrics["fp"] = fp
-        metrics["tn"] = tn
-        metrics["failure_rate"] = 1 - 1.0 * len(results) / N
-        
-        return(metrics)
+            metrics["accuracy"] = 0.0
+            metrics["precision"] = 0.0
+            metrics["f1"] = 0.0
+            metrics["earliness"] = 0.0
+            
+        return metrics

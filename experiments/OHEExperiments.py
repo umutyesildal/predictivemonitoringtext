@@ -18,7 +18,7 @@ if not os.path.exists(results_dir):
     print(f"Created results directory: {results_dir}")
 
 # Set correct data path
-data_filepath = os.path.join(parent_dir, "data", "updated_500row.csv")
+data_filepath = os.path.join(parent_dir, "data", "BPI_Challenge_2017_unstructured.csv")
 
 from PredictiveModel import PredictiveModel
 from sklearn.metrics import roc_auc_score, accuracy_score, classification_report
@@ -53,45 +53,43 @@ def preprocess_data(df):
 
 # Define columns and parameters
 static_cols = ["RequestedAmount", "MonthlyCost", "FirstWithdrawalAmount", "CreditScore"]
-dynamic_cols = ["startTime", "completeTime", "EventDescription"]
-cat_cols = ["ApplicationType", "LoanGoal", "EventOrigin", "Action"]
+dynamic_cols = ["startTime", "completeTime"]
+cat_cols = ["ApplicationType", "LoanGoal", "EventOrigin"]
 case_id_col = "case"
 label_col = "Accepted"
 event_nr_col = "event"
 text_col = "EventDescription"
+event_col = "Action"
 
 # Preprocess data
 data = preprocess_data(data)
 
-# Detect minority class
-minority_class = 0 if (data[label_col] == 0).sum() < (data[label_col] == 1).sum() else 1
-majority_class = 1 - minority_class
-
-# Separate majority and minority samples
-minority = data[data[label_col] == minority_class]
-majority = data[data[label_col] == majority_class]
-
-# Upsample minority class
-minority_upsampled = resample(minority,
-                            replace=True,
-                            n_samples=len(majority),
-                            random_state=42)
-
-# Create balanced dataset
-data_balanced = pd.concat([majority, minority_upsampled])
+# Print some statistics about the data
+print("\nData Statistics:")
+print(f"Total number of events: {len(data)}")
+print(f"Number of unique cases: {data[case_id_col].nunique()}")
+print(f"Average events per case: {len(data) / data[case_id_col].nunique():.2f}")
+print(f"Label distribution:\n{data.groupby(case_id_col)[label_col].first().value_counts(normalize=True)}")
 
 # First create case-level labels
-case_labels = data_balanced.groupby(case_id_col)[label_col].first()
+case_labels = data.groupby(case_id_col)[label_col].first()
 
-# Then perform train-test split
+# Then perform train-test split with larger test size for better evaluation
 train_names, test_names = train_test_split(case_labels.index.values, 
-                                         train_size=0.8, 
+                                         test_size=0.3,
                                          random_state=42,
                                          stratify=case_labels.values)
 
 # Split into train and test sets
-train = data_balanced[data_balanced[case_id_col].isin(train_names)]
-test = data_balanced[data_balanced[case_id_col].isin(test_names)]
+train = data[data[case_id_col].isin(train_names)]
+test = data[data[case_id_col].isin(test_names)]
+
+# Print split statistics
+print("\nSplit Statistics:")
+print(f"Training set cases: {len(train_names)}")
+print(f"Test set cases: {len(test_names)}")
+print(f"Training set events: {len(train)}")
+print(f"Test set events: {len(test)}")
 
 # Get train case labels
 train_case_labels = case_labels[case_labels.index.isin(train_names)]
@@ -112,6 +110,7 @@ encoder_kwargs = {
     "static_cols": static_cols,
     "dynamic_cols": dynamic_cols,
     "cat_cols": cat_cols,
+    "event_col": event_col,
     "encoding_method": "onehot",
     "oversample_fit": False,
     "minority_label": "0",

@@ -4,6 +4,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
 
 import pandas as pd
 import time
@@ -63,7 +64,8 @@ class PredictiveModel():
         elif cls_method == "rf":
             self.cls = RandomForestClassifier(**cls_kwargs)
         elif cls_method == "svm":
-            self.cls = SVC(probability=True, **cls_kwargs)
+            self.cls = SVC(**cls_kwargs)
+            self.scaler = StandardScaler()
         else:
             print("Classifier method not known. Defaulting to RandomForest.")
             self.cls = RandomForestClassifier(**cls_kwargs)
@@ -82,6 +84,34 @@ class PredictiveModel():
         train_X = train_encoded.drop([self.case_id_col, self.label_col], axis=1)
         train_y = train_encoded[self.label_col]
         
+        # Text transformation should be done before scaling
+        if self.transformer is not None:
+            print("Transforming text features...")
+            text_cols = [col for col in train_X.columns if col.startswith(self.text_col)]
+            if text_cols:
+                # Create a DataFrame with just the text columns
+                text_data = train_X[text_cols].copy()
+                # Convert to string and fill NaN values
+                for col in text_cols:
+                    text_data[col] = text_data[col].fillna('').astype(str)
+                # Transform text data
+                train_text = self.transformer.fit_transform(text_data, train_y)
+                # Combine with non-text features
+                train_X = pd.concat([train_X.drop(text_cols, axis=1), train_text], axis=1)
+        
+        # Convert all remaining object/string columns to numeric
+        for col in train_X.select_dtypes(include=['object']).columns:
+            train_X[col] = pd.Categorical(train_X[col]).codes
+        
+        # Feature scaling for SVM
+        if hasattr(self, 'scaler'):
+            print("Scaling features...")
+            train_X = pd.DataFrame(
+                self.scaler.fit_transform(train_X),
+                columns=train_X.columns,
+                index=train_X.index
+            )
+        
         print("Fitting classifier...")
         self.cls.fit(train_X, train_y)
         print("Model fitting completed.")
@@ -92,8 +122,9 @@ class PredictiveModel():
         """
         Predict class probabilities for the test dataset.
         1) Sequence-encode the test data
-        2) Optionally transform text columns
-        3) Return predicted probabilities
+        2) Transform text columns
+        3) Scale features
+        4) Return predicted probabilities
         """
         encode_start_time = time.time()
         test_encoded = self.encoder.transform(dt_test)
@@ -109,14 +140,33 @@ class PredictiveModel():
         
         # Prepare features (X)
         test_X = test_encoded.drop([self.case_id_col, self.label_col], axis=1)
+        test_y = test_encoded[self.label_col]  # We might need this for some transformers
         
         # Text transformation
         if self.transformer is not None:
             text_cols = [col for col in test_X.columns if col.startswith(self.text_col)]
-            for col in text_cols:
-                test_X[col] = test_X[col].astype('str')
-            test_text = self.transformer.transform(test_X[text_cols])
-            test_X = pd.concat([test_X.drop(text_cols, axis=1), test_text], axis=1)
+            if text_cols:
+                # Create a DataFrame with just the text columns
+                text_data = test_X[text_cols].copy()
+                # Convert to string and fill NaN values
+                for col in text_cols:
+                    text_data[col] = text_data[col].fillna('').astype(str)
+                # Transform text data
+                test_text = self.transformer.transform(text_data)
+                # Combine with non-text features
+                test_X = pd.concat([test_X.drop(text_cols, axis=1), test_text], axis=1)
+        
+        # Convert all remaining object/string columns to numeric
+        for col in test_X.select_dtypes(include=['object']).columns:
+            test_X[col] = pd.Categorical(test_X[col]).codes
+        
+        # Feature scaling for SVM
+        if hasattr(self, 'scaler'):
+            test_X = pd.DataFrame(
+                self.scaler.transform(test_X),
+                columns=test_X.columns,
+                index=test_X.index
+            )
         
         self.test_case_names = test_encoded[self.case_id_col]
         self.test_X = test_X
@@ -126,16 +176,7 @@ class PredictiveModel():
         self.test_preproc_time = test_preproc_end_time - test_preproc_start_time
         
         test_start_time = time.time()
-        if self.hardcoded_prediction is not None:
-            # Model was trained with one class only -> probability array is always
-            # 100% for the single known class, 0% for others.
-            # Suppose classes_ = ['X'], we artificially create a 2D array. 
-            # For demonstration, treat it as shape (n_samples, 1) or (n_samples, 2).
-            # But if there was only one label, scikit-learn classifiers usually have shape (n_samples, 1).
-            # We'll do a simpler approach: entire probability = 1.0 for the single class:
-            predictions_proba = np.ones((test_X.shape[0], 1))
-        else:
-            predictions_proba = self.cls.predict_proba(test_X)
+        predictions_proba = self.cls.predict_proba(test_X)
         test_end_time = time.time()
         self.test_time = test_end_time - test_start_time
         self.nr_test_cases = len(predictions_proba)
