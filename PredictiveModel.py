@@ -74,10 +74,8 @@ class PredictiveModel():
         self.nr_test_cases = None
 
     def fit(self, dt_train):
-        print("Encoding training data...")
         train_encoded = self.encoder.fit_transform(dt_train)
         
-        print("Preparing features and target...")
         self.train_X = train_encoded.drop([self.case_id_col, self.label_col], axis=1)
         self.train_y = train_encoded[self.label_col]
         
@@ -87,48 +85,35 @@ class PredictiveModel():
             n_classes = len(np.unique(self.train_y))
             class_weights = dict(enumerate(n_samples / (n_classes * np.bincount(self.train_y))))
             self.cls.class_weight = class_weights
-            print("\nClass weights:", class_weights)
         
-        print("\nFeature Value Distribution:")
+        # Remove features with very low non-zero values
         feature_non_zero = {}
         for col in self.train_X.columns:
             non_zero = (self.train_X[col] != 0).sum()
             feature_non_zero[col] = non_zero/len(self.train_X)
-            print(f"{col}: {non_zero} non-zero values ({feature_non_zero[col]*100:.2f}%)")
         
-        # Remove features with very low non-zero values
         low_value_features = [col for col, ratio in feature_non_zero.items() 
                             if ratio < 0.01 and col not in self.static_cols]
         if low_value_features:
-            print(f"\nRemoving {len(low_value_features)} features with < 1% non-zero values:")
-            print(low_value_features)
             self.train_X = self.train_X.drop(columns=low_value_features)
         
         # Text transformation should be done before scaling
         if self.transformer is not None:
-            print("\nText Transformation Details:")
-            print(f"Transformer type: {type(self.transformer).__name__}")
             text_cols = [col for col in self.train_X.columns if col.startswith(self.text_col)]
-            print(f"Found {len(text_cols)} text columns")
             
             if text_cols:
                 # Create a DataFrame with just the text columns
                 text_data = self.train_X[text_cols].copy()
-                print(f"Text data shape before transformation: {text_data.shape}")
                 
                 # Convert to string and fill NaN values
                 for col in text_cols:
                     text_data[col] = text_data[col].fillna('').astype(str)
-                    print(f"Sample values from {col}:")
-                    print(text_data[col].head())
                 
                 # Transform text data
                 train_text = self.transformer.fit_transform(text_data, self.train_y)
-                print(f"Text data shape after transformation: {train_text.shape}")
                 
                 # Combine with non-text features
                 self.train_X = pd.concat([self.train_X.drop(text_cols, axis=1), train_text], axis=1)
-                print(f"Final feature matrix shape: {self.train_X.shape}")
         
         # Convert all remaining object/string columns to numeric
         for col in self.train_X.select_dtypes(include=['object']).columns:
@@ -136,25 +121,13 @@ class PredictiveModel():
         
         # Feature scaling for SVM
         if hasattr(self, 'scaler'):
-            print("Scaling features...")
             self.train_X = pd.DataFrame(
                 self.scaler.fit_transform(self.train_X),
                 columns=self.train_X.columns,
                 index=self.train_X.index
             )
         
-        print("Fitting classifier...")
         self.cls.fit(self.train_X, self.train_y)
-        
-        if hasattr(self.cls, 'feature_importances_'):
-            importances = pd.DataFrame({
-                'feature': self.train_X.columns,
-                'importance': self.cls.feature_importances_
-            }).sort_values('importance', ascending=False)
-            print("\nTop 20 Most Important Features:")
-            print(importances.head(20))
-        
-        print("Model fitting completed.")
         
         return self
 

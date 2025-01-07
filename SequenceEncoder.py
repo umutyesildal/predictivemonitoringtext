@@ -37,8 +37,6 @@ class SequenceEncoder():
                 total_cases = len(X[self.case_id_col].unique())
                 category_counts = X.groupby(self.case_id_col)['LoanGoal'].first().value_counts()
                 rare_categories = category_counts[category_counts/total_cases < 0.01].index
-                print(f"\nRare LoanGoal categories (< 1%):")
-                print(rare_categories)
                 
                 self.loan_goal_mapping = {}
                 for cat in rare_categories:
@@ -52,26 +50,16 @@ class SequenceEncoder():
                         self.loan_goal_mapping[cat] = 'Tax and Payments'
                     else:
                         self.loan_goal_mapping[cat] = 'Other'
-                
-                print("\nCategory mapping:")
-                print(self.loan_goal_mapping)
             
             # Apply the mapping
             if hasattr(self, 'loan_goal_mapping'):
                 X['LoanGoal'] = X['LoanGoal'].replace(self.loan_goal_mapping)
-                print("\nLoanGoal distribution after grouping:")
-                print(X.groupby(self.case_id_col)['LoanGoal'].first().value_counts(normalize=True))
         
         # Rest of the encoding process
         max_events = min(self.nr_events, X[self.event_nr_col].max())
-        print(f"\nEncoding up to {max_events} events per case")
-        print(f"Total cases in input: {X[self.case_id_col].nunique()}")
-        print(f"Total events in input: {len(X)}")
         
         # Get all first events for each case
         first_events = X.groupby(self.case_id_col).first().reset_index()
-        print(f"\nFirst events shape: {first_events.shape}")
-        print(f"Event numbers in first events: {first_events[self.event_nr_col].value_counts().sort_index()}")
         
         data_final = first_events[self.static_cols].copy()
         data_final[self.case_id_col] = first_events[self.case_id_col]
@@ -82,28 +70,18 @@ class SequenceEncoder():
             for event_nr in range(1, max_events + 1):
                 # Get events for current event number
                 event_data = X[X[self.event_nr_col] == event_nr].copy()
-                print(f"\nProcessing event {event_nr}:")
-                print(f"Found {len(event_data)} events")
-                print(f"Unique cases in this event: {event_data[self.case_id_col].nunique()}")
-                print(f"Event value counts:")
-                print(event_data[self.event_col].value_counts())
                 
                 if len(event_data) == 0:
-                    print(f"Warning: No events found for event number {event_nr}")
                     continue
                 
                 # First encode the event name if specified
                 if self.event_col and self.event_col in X.columns:
                     event_name_data = event_data[self.event_col].fillna('MISSING')
-                    print(f"Unique event names in event {event_nr}: {event_name_data.nunique()}")
-                    print(f"Event name distribution:")
-                    print(event_name_data.value_counts())
                     
                     if fitting:
                         encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
                         encoded = encoder.fit_transform(event_name_data.values.reshape(-1, 1))
                         self.event_encoders[f"event{event_nr}"] = encoder
-                        print(f"Event {event_nr} categories: {encoder.categories_[0]}")
                     else:
                         encoder_key = f"event{event_nr}"
                         if encoder_key not in self.event_encoders:
@@ -124,16 +102,12 @@ class SequenceEncoder():
                         if col in X.columns:
                             # Get data for current event
                             col_data = event_data[col].fillna('MISSING')
-                            print(f"Unique values in {col} for event {event_nr}: {col_data.nunique()}")
-                            print(f"{col} value distribution:")
-                            print(col_data.value_counts().head())
                             
                             if fitting:
                                 # Create and fit a new encoder for this column and event
                                 encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
                                 encoded = encoder.fit_transform(col_data.values.reshape(-1, 1))
                                 self.encoders[f"{col}_event{event_nr}"] = encoder
-                                print(f"{col} event {event_nr} categories: {encoder.categories_[0]}")
                             else:
                                 # Use the previously fitted encoder
                                 encoder_key = f"{col}_event{event_nr}"
@@ -165,17 +139,6 @@ class SequenceEncoder():
         
         # Fill NaN values with 0 for encoded columns
         data_final = data_final.fillna(0)
-        
-        # Print feature statistics
-        print(f"\nFinal encoded data shape: {data_final.shape}")
-        print(f"Number of features: {len(data_final.columns)}")
-        print(f"Number of cases with all events: {len(data_final)}")
-        
-        if fitting:
-            print("\nFeature names:")
-            for col in data_final.columns:
-                non_zero = (data_final[col] != 0).sum()
-                print(f"- {col}: {non_zero} non-zero values ({non_zero/len(data_final)*100:.2f}%)")
         
         return data_final
 
